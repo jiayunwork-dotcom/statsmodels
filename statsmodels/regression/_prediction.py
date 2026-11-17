@@ -123,7 +123,7 @@ class PredictionResults:
 
 
 def get_prediction(self, exog=None, transform=True, weights=None,
-                   row_labels=None, pred_kwds=None):
+                   row_labels=None, pred_kwds=None, inference=None):
     """
     Compute prediction results.
 
@@ -144,6 +144,14 @@ def get_prediction(self, exog=None, transform=True, weights=None,
     row_labels : list
         A list of row labels to use.  If not provided, read `exog` is
         available.
+    inference : ClusterBootstrapCalibration, optional
+        A calibration created by ``get_cluster_bootstrap`` of this same
+        results instance.  If given, the returned object computes
+        standard errors and confidence intervals for the conditional
+        means from the empirical bootstrap reference.  In this mode
+        ``weights`` must be None, ``exog`` must not contain missing
+        values or unknown categorical levels, and intervals for
+        individual new observations (``obs=True``) are not available.
     **kwargs
         Some models can take additional keyword arguments, see the predict
         method of the model for the details.
@@ -156,13 +164,37 @@ def get_prediction(self, exog=None, transform=True, weights=None,
         tables for the prediction of the mean and of new observations.
     """
 
+    if inference is not None and weights is not None:
+        raise ValueError(
+            "weights are not supported together with an inference "
+            "calibration"
+        )
+
     # prepare exog and row_labels, based on base Results.predict
     if transform and hasattr(self.model, 'formula') and exog is not None:
         from patsy import dmatrix
         if isinstance(exog, pd.Series):
             # GH-6509
             exog = pd.DataFrame(exog)
-        exog = dmatrix(self.model.data.design_info, exog)
+        if inference is not None:
+            if row_labels is None:
+                # dmatrix drops the pandas index; keep the original labels
+                # so that row order and duplicated labels are preserved
+                row_labels = getattr(exog, 'index', None)
+                if callable(row_labels):
+                    row_labels = None
+            from patsy import PatsyError
+            try:
+                exog = dmatrix(self.model.data.design_info, exog,
+                               NA_action="raise")
+            except PatsyError as err:
+                raise ValueError(
+                    "exog could not be transformed for prediction; it "
+                    "contains missing values or unknown categorical "
+                    f"levels: {err}"
+                ) from err
+        else:
+            exog = dmatrix(self.model.data.design_info, exog)
 
     if exog is not None:
         if row_labels is None:
@@ -195,6 +227,26 @@ def get_prediction(self, exog=None, transform=True, weights=None,
 
     if pred_kwds is None:
         pred_kwds = {}
+
+    if inference is not None:
+        from statsmodels.regression._cluster_bootstrap import (
+            ClusterBootstrapCalibration,
+        )
+        if not isinstance(inference, ClusterBootstrapCalibration):
+            raise TypeError(
+                "inference must be a ClusterBootstrapCalibration created "
+                "by get_cluster_bootstrap of this results instance, got "
+                f"{type(inference).__name__}"
+            )
+        if not np.all(np.isfinite(exog)):
+            raise ValueError(
+                "exog contains non-finite values; predictions with an "
+                "inference calibration require finite exog"
+            )
+        predicted_mean = self.model.predict(self.params, exog, **pred_kwds)
+        return inference._prediction_results(self, exog, predicted_mean,
+                                             row_labels)
+
     predicted_mean = self.model.predict(self.params, exog, **pred_kwds)
 
     covb = self.cov_params()

@@ -1,0 +1,226 @@
+{
+  "n_obs": 20000,
+  "n_params": 6,
+  "n_clusters": 500,
+  "n_resamples": 999,
+  "data_seed": 20261119,
+  "calibration_seed": 81520263,
+  "phases": [
+    {
+      "phase": "calibration",
+      "batch_size": 8,
+      "seconds": 0.2833695839999564,
+      "rss_before_mb": 164.5,
+      "rss_after_mb": 167.5703125,
+      "ols_refits": 999,
+      "n_valid": 999,
+      "n_failed": 0,
+      "boot_params_shape": [
+        999,
+        6
+      ],
+      "params_shape": [
+        6
+      ],
+      "cluster_sizes_shape": [
+        500
+      ]
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 8,
+      "m": 2000,
+      "simultaneous": false,
+      "seconds": 0.07391875000030268,
+      "rss_before_mb": 167.5703125,
+      "rss_after_mb": 168.46875,
+      "ols_refits": 0,
+      "ci_shape": [
+        2000,
+        2
+      ],
+      "frame_shape": [
+        2000,
+        6
+      ]
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 8,
+      "m": 2000,
+      "simultaneous": true,
+      "seconds": 0.07417729200096801,
+      "rss_before_mb": 168.46875,
+      "rss_after_mb": 168.46875,
+      "ols_refits": 0,
+      "ci_shape": [
+        2000,
+        2
+      ],
+      "frame_shape": [
+        2000,
+        6
+      ]
+    },
+    {
+      "phase": "contrast_query",
+      "batch_size": 8,
+      "m": 50,
+      "seconds": 0.0024242090003099293,
+      "ols_refits": 0
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 8,
+      "m": 20000,
+      "simultaneous": false,
+      "seconds": 0.73332445899905,
+      "rss_before_mb": 169.34375,
+      "rss_after_mb": 170.34375,
+      "ols_refits": 0,
+      "ci_shape": [
+        20000,
+        2
+      ],
+      "frame_shape": [
+        20000,
+        6
+      ]
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 8,
+      "m": 20000,
+      "simultaneous": true,
+      "seconds": 0.735589957999764,
+      "rss_before_mb": 170.34375,
+      "rss_after_mb": 171.59375,
+      "ols_refits": 0,
+      "ci_shape": [
+        20000,
+        2
+      ],
+      "frame_shape": [
+        20000,
+        6
+      ]
+    },
+    {
+      "phase": "contrast_query",
+      "batch_size": 8,
+      "m": 50,
+      "seconds": 0.0015354999995906837,
+      "ols_refits": 0
+    },
+    {
+      "phase": "calibration",
+      "batch_size": 32,
+      "seconds": 0.26390229200114845,
+      "rss_before_mb": 171.59375,
+      "rss_after_mb": 172.59375,
+      "ols_refits": 999,
+      "n_valid": 999,
+      "n_failed": 0,
+      "boot_params_shape": [
+        999,
+        6
+      ],
+      "params_shape": [
+        6
+      ],
+      "cluster_sizes_shape": [
+        500
+      ]
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 32,
+      "m": 2000,
+      "simultaneous": false,
+      "seconds": 0.06798362500012445,
+      "rss_before_mb": 172.59375,
+      "rss_after_mb": 172.59375,
+      "ols_refits": 0,
+      "ci_shape": [
+        2000,
+        2
+      ],
+      "frame_shape": [
+        2000,
+        6
+      ]
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 32,
+      "m": 2000,
+      "simultaneous": true,
+      "seconds": 0.06731587499962188,
+      "rss_before_mb": 172.59375,
+      "rss_after_mb": 172.59375,
+      "ols_refits": 0,
+      "ci_shape": [
+        2000,
+        2
+      ],
+      "frame_shape": [
+        2000,
+        6
+      ]
+    },
+    {
+      "phase": "contrast_query",
+      "batch_size": 32,
+      "m": 50,
+      "seconds": 0.0015544589987257496,
+      "ols_refits": 0
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 32,
+      "m": 20000,
+      "simultaneous": false,
+      "seconds": 0.6819369170007121,
+      "rss_before_mb": 172.59375,
+      "rss_after_mb": 172.59375,
+      "ols_refits": 0,
+      "ci_shape": [
+        20000,
+        2
+      ],
+      "frame_shape": [
+        20000,
+        6
+      ]
+    },
+    {
+      "phase": "prediction_query",
+      "batch_size": 32,
+      "m": 20000,
+      "simultaneous": true,
+      "seconds": 0.6770029999988765,
+      "rss_before_mb": 172.59375,
+      "rss_after_mb": 172.59375,
+      "ols_refits": 0,
+      "ci_shape": [
+        20000,
+        2
+      ],
+      "frame_shape": [
+        20000,
+        6
+      ]
+    },
+    {
+      "phase": "contrast_query",
+      "batch_size": 32,
+      "m": 50,
+      "seconds": 0.0013924169998063007,
+      "ols_refits": 0
+    }
+  ],
+  "batch_size_invariance": {
+    "boot_params_bitwise_equal": true,
+    "joint_ci_bitwise_equal": true
+  }
+}

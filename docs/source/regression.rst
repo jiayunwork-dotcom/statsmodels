@@ -39,6 +39,73 @@ Detailed examples can be found here:
 * `Recursive LS <examples/notebooks/generated/recursive_ls.ipynb>`_
 * `Rolling LS <examples/notebooks/generated/rolling_ls.ipynb>`_
 
+.. _regression_cluster_bootstrap:
+
+Inference for related observations: cluster bootstrap
+-----------------------------------------------------
+
+Regression tables often contain several related rows per school, store, or
+subject.  For such data, ``OLS.fit()`` results can be calibrated with a
+*pairs cluster bootstrap*: whole clusters are resampled with replacement,
+the model is refit on each resample, and the empirical distribution of the
+refitted coefficients replaces the t or normal reference of ``t_test`` and
+``get_prediction``.  The same calibration drives linear contrasts
+(including simultaneous, family-wise intervals that preserve the
+dependence between contrasts) and joint confidence bands for conditional
+mean predictions.
+
+.. ipython:: python
+
+    import numpy as np
+    import statsmodels.api as sm
+
+    rng = np.random.default_rng(20261117)
+    sizes = [8, 5, 12, 7, 9, 6, 10, 8, 11, 7]
+    rows, groups = [], []
+    for g, s in enumerate(sizes):
+        x = rng.normal(size=s)
+        u = rng.normal()                      # cluster-level shock
+        y = 1.0 + 0.5 * x + u + rng.normal(scale=0.5, size=s)
+        rows.append(np.column_stack([np.ones(s), x, y]))
+        groups += [f"school{g}"] * s
+    data = np.vstack(rows)
+    res = sm.OLS(data[:, 2], data[:, :2]).fit()
+
+    cal = res.get_cluster_bootstrap(groups, n_resamples=999, random_state=0)
+    print(cal)
+
+    # linear contrasts on the empirical reference
+    tt = res.t_test([[0, 1]], inference=cal)
+    print(tt.summary_frame())
+    # a simultaneous family of contrasts
+    ts = res.t_test([[1, 0], [0, 1]], inference=cal, simultaneous=True)
+    print(ts.conf_int(0.1))
+    # joint confidence band for conditional means
+    pred = res.get_prediction(data[:5, :2], inference=cal)
+    print(pred.summary_frame(alpha=0.1, simultaneous=True))
+
+The calibration is bound to the fitted results instance that produced it;
+using it with any other fit raises an error.  Cluster labels are given in
+the physical row order of the modeling input *before* any rows were dropped
+by the formula or ``missing='drop'`` handling, and the same rows are dropped
+from the labels.  Invalid resamples (for example rank-deficient resampled
+designs) are retried a bounded number of times and reported through
+``cal.n_valid``, ``cal.n_failed`` and ``cal.failure_reasons``.
+
+The resampling unit, estimand, centering, scaling, finite-sample tail
+probabilities, quantile rule, and simultaneity definition are documented in
+detail in :class:`ClusterBootstrapCalibration`.  In short: the bootstrap
+distribution of ``beta* - beta_hat`` approximates the sampling distribution
+of ``beta_hat - beta``; two-sided p-values are
+``(1 + #{|T*| >= |t_obs|}) / (B + 1)`` and never zero; intervals invert
+these p-values through order statistics of the studentized bootstrap
+statistics; simultaneous families use the family-wise maximum statistic,
+so no Bonferroni or independence approximation is needed.  The method
+requires independent clusters and is asymptotic in the number of clusters;
+with few clusters, strongly unequal cluster sizes, or systematically
+different cluster-level error variances, coverage can deviate from the
+nominal level.
+
 Technical Documentation
 -----------------------
 
@@ -215,6 +282,7 @@ results class of the other linear models.
    RegressionResults
    OLSResults
    PredictionResults
+   ClusterBootstrapCalibration
 
 .. currentmodule:: statsmodels.base.elastic_net
 

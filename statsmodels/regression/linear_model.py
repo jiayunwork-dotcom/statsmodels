@@ -48,6 +48,9 @@ import statsmodels.base.model as base
 import statsmodels.base.wrapper as wrap
 from statsmodels.emplike.elregress import _ELRegOpts
 # need import in module instead of lazily to copy `__doc__`
+from statsmodels.regression._cluster_bootstrap import (
+    ClusterBootstrapCalibration,
+)
 from statsmodels.regression._prediction import PredictionResults
 from statsmodels.tools.decorators import cache_readonly, cache_writable
 from statsmodels.tools.sm_exceptions import InvalidTestWarning, ValueWarning
@@ -60,7 +63,7 @@ from . import _prediction as pred
 __docformat__ = 'restructuredtext en'
 
 __all__ = ['GLS', 'WLS', 'OLS', 'GLSAR', 'PredictionResults',
-           'RegressionResultsWrapper']
+           'ClusterBootstrapCalibration', 'RegressionResultsWrapper']
 
 
 _fit_regularized_doc =\
@@ -2687,11 +2690,79 @@ class RegressionResults(base.LikelihoodModelResults):
 
     @Appender(pred.get_prediction.__doc__)
     def get_prediction(self, exog=None, transform=True, weights=None,
-                       row_labels=None, **kwargs):
+                       row_labels=None, inference=None, **kwargs):
 
         return pred.get_prediction(
             self, exog=exog, transform=transform, weights=weights,
-            row_labels=row_labels, **kwargs)
+            row_labels=row_labels, inference=inference, **kwargs)
+
+    def get_cluster_bootstrap(self, groups, *, n_resamples=999,
+                              random_state=0, batch_size=32):
+        """
+        Calibrate a pairs cluster bootstrap for this fitted OLS model.
+
+        Whole clusters are resampled with replacement and the model is
+        refit on each resample.  The returned calibration can be passed
+        as ``inference=...`` to `t_test` and `get_prediction` of this
+        same results instance to obtain standard errors, p-values,
+        pointwise intervals, and simultaneous (family-wise) bands based
+        on the empirical bootstrap reference instead of the t or normal
+        distribution.
+
+        Parameters
+        ----------
+        groups : array_like
+            One-dimensional cluster labels (list, tuple, ndarray, or
+            Series).  All elements must be non-empty strings or all
+            non-boolean integers.  Labels must be given in the physical
+            row order of the modeling input *before* any rows were
+            dropped by the formula or ``missing='drop'`` handling; the
+            same rows are then dropped from ``groups``.  No alignment by
+            pandas index is performed.  At least 6 distinct clusters are
+            required after row deletion.
+        n_resamples : int, optional
+            Number of requested bootstrap resamples, at least 99.
+            Default is 999.
+        random_state : int, optional
+            Seed for the resampling generator, an integer in
+            [0, 2**32).  Default is 0.  The global NumPy random state is
+            not used or modified.
+        batch_size : int, optional
+            Positive chunk size bounding the workspace of queries on the
+            calibration.  It does not affect any numerical result.
+            Default is 32.
+
+        Returns
+        -------
+        ClusterBootstrapCalibration
+            The calibration bound to this results instance.  It reports
+            ``n_valid``/``n_failed`` resamples and ``failure_reasons``.
+
+        See Also
+        --------
+        ClusterBootstrapCalibration
+            Definition of the statistical method.
+        t_test
+            Linear hypothesis tests that accept the calibration as
+            ``inference``.
+        get_prediction
+            Predictions that accept the calibration as ``inference``.
+
+        Notes
+        -----
+        Only unweighted OLS fits of a one-dimensional dependent variable
+        with a finite, full column rank design and positive residual
+        degrees of freedom are supported.  The original data, ``groups``,
+        the model, and this results instance are not modified, and later
+        changes to the caller's containers do not affect the calibration.
+        """
+        from statsmodels.regression._cluster_bootstrap import (
+            get_cluster_bootstrap,
+        )
+        return get_cluster_bootstrap(
+            self, groups, n_resamples=n_resamples, random_state=random_state,
+            batch_size=batch_size,
+        )
 
     def summary(
             self,

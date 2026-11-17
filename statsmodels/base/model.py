@@ -1546,7 +1546,8 @@ class LikelihoodModelResults(Results):
             return cov_p
 
     # TODO: make sure this works as needed for GLMs
-    def t_test(self, r_matrix, cov_p=None, use_t=None):
+    def t_test(self, r_matrix, cov_p=None, use_t=None, inference=None,
+               simultaneous=False):
         """
         Compute a t-test for a each linear hypothesis of the form Rb = q.
 
@@ -1571,6 +1572,19 @@ class LikelihoodModelResults(Results):
             is True, then the p-values are based on the t distribution. If
             use_t is False, then the p-values are based on the normal
             distribution.
+        inference : ClusterBootstrapCalibration, optional
+            A calibration created by ``get_cluster_bootstrap`` of this same
+            results instance. If given, standard errors, p-values and
+            confidence intervals are computed from the empirical bootstrap
+            reference of the calibration instead of the t or normal
+            distribution. ``cov_p`` and ``use_t`` cannot be combined with
+            ``inference``.
+        simultaneous : bool, optional
+            Only used together with ``inference``. If True, the constraints
+            of this call form one simultaneous family: p-values are adjusted
+            and ``conf_int`` returns joint (family-wise) intervals calibrated
+            by the maximum statistic of the family. If False (default),
+            pointwise p-values and intervals are computed.
 
         Returns
         -------
@@ -1637,6 +1651,51 @@ class LikelihoodModelResults(Results):
         """
         from patsy import DesignInfo
         use_t = bool_like(use_t, "use_t", strict=True, optional=True)
+        simultaneous = bool_like(simultaneous, "simultaneous", strict=True,
+                                 optional=False)
+        if inference is not None:
+            if cov_p is not None or use_t is not None:
+                raise ValueError(
+                    "cov_p and use_t cannot be combined with an inference "
+                    "calibration; the calibration replaces them"
+                )
+            from statsmodels.regression._cluster_bootstrap import (
+                ClusterBootstrapCalibration,
+            )
+            if not isinstance(inference, ClusterBootstrapCalibration):
+                raise TypeError(
+                    "inference must be a ClusterBootstrapCalibration "
+                    "created by get_cluster_bootstrap of this results "
+                    f"instance, got {type(inference).__name__}"
+                )
+            if self.params.ndim == 2:
+                names = [f'y{i[0]}_{i[1]}'
+                         for i in self.model.data.cov_names]
+            else:
+                names = self.model.data.cov_names
+            LC = DesignInfo(names).linear_constraint(r_matrix)
+            r_matrix, q_matrix = LC.coefs, LC.constants
+            num_ttests = r_matrix.shape[0]
+            num_params = r_matrix.shape[1]
+            params = self.params.ravel(order="F")
+            if num_params != params.shape[0]:
+                raise ValueError('r_matrix and params are not aligned')
+            if q_matrix is None:
+                q_matrix = np.zeros(num_ttests)
+            else:
+                q_matrix = np.asarray(q_matrix)
+                q_matrix = q_matrix.squeeze()
+            if q_matrix.size > 1:
+                if q_matrix.shape[0] != num_ttests:
+                    raise ValueError("r_matrix and q_matrix must have the "
+                                     "same number of rows")
+            return inference._t_test(self, r_matrix, q_matrix,
+                                     simultaneous=simultaneous)
+        if simultaneous:
+            raise ValueError(
+                "simultaneous=True requires an inference calibration; "
+                "pass inference=... created by get_cluster_bootstrap"
+            )
         if self.params.ndim == 2:
             names = [f'y{i[0]}_{i[1]}'
                      for i in self.model.data.cov_names]

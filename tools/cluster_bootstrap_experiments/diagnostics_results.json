@@ -1,0 +1,64 @@
+{
+  "experiment": "diagnostics",
+  "alpha": 0.1,
+  "n_resamples": 999,
+  "data_master_seed": 20261118,
+  "calibration_master_seed": 81520262,
+  "scenarios": {
+    "D1_baseline": {
+      "coverage_joint": 0.865,
+      "n_datasets": 200,
+      "n_clusters": 40,
+      "sizes": "ramp",
+      "sd_scale": null,
+      "min_valid_resamples": 999
+    },
+    "D2_unequal_sizes": {
+      "coverage_joint": 0.845,
+      "n_datasets": 200,
+      "n_clusters": 40,
+      "sizes": "ramp",
+      "sd_scale": null,
+      "min_valid_resamples": 999
+    },
+    "D3_heteroskedastic": {
+      "coverage_joint": 0.88,
+      "n_datasets": 200,
+      "n_clusters": 40,
+      "sizes": "ramp",
+      "sd_scale": "ramp",
+      "min_valid_resamples": 999
+    },
+    "D4_few_clusters": {
+      "coverage_joint": 0.725,
+      "n_datasets": 200,
+      "n_clusters": 6,
+      "sizes": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        8
+      ],
+      "sd_scale": null,
+      "min_valid_resamples": 999
+    },
+    "D5_few_unequal": {
+      "coverage_joint": 0.725,
+      "n_datasets": 200,
+      "n_clusters": 6,
+      "sizes": [
+        4,
+        8,
+        12,
+        16,
+        20,
+        24
+      ],
+      "sd_scale": null,
+      "min_valid_resamples": 999
+    }
+  },
+  "elapsed_seconds": 18.089698134001083
+}

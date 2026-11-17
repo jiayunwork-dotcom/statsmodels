@@ -1,0 +1,30 @@
+{
+  "experiment": "joint_mean_band_coverage",
+  "n_datasets": 400,
+  "n_clusters": 40,
+  "cluster_size": 8,
+  "n_resamples": 999,
+  "min_valid_resamples": 999,
+  "alpha": 0.1,
+  "x_grid": [
+    -2.0,
+    -1.0,
+    0.0,
+    1.0,
+    2.0
+  ],
+  "data_master_seed": 20261117,
+  "calibration_master_seed": 81520261,
+  "coverage_joint": 0.8575,
+  "coverage_joint_wilson95": [
+    0.8198370240936099,
+    0.8883616854573682
+  ],
+  "coverage_pointwise_mean": 0.8845,
+  "acceptance_interval": [
+    0.84,
+    0.96
+  ],
+  "accepted": true,
+  "elapsed_seconds": 7.037685253000745
+}
