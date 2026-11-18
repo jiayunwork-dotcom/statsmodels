@@ -2,6 +2,13 @@ import numpy as np
 import pandas as pd
 from statsmodels.base.model import LikelihoodModelResults
 
+from statsmodels.imputation._mi_inference import (
+    MIPooledInference,
+    SmallSampleMIResultsMixin,
+    _extract_fit,
+    _validate_inference_kwds,
+)
+
 
 class BayesGaussMI:
     """
@@ -283,7 +290,8 @@ class MI:
         for k in range(burn):
             imp.update()
 
-    def fit(self, results_cb=None):
+    def fit(self, results_cb=None, *, inference='legacy',
+            df_complete=None):
         """
         Impute datasets, fit models, and pool results.
 
@@ -293,15 +301,38 @@ class MI:
             If provided, each results instance r is passed through `results_cb`,
             then appended to the `results` attribute of the MIResults object.
             To save complete results, use `results_cb=lambda x: x`.  The default
-            behavior is to save no results.
+            behavior is to save no results.  Finite-sample inference does not
+            depend on this callback: the information it needs is extracted
+            directly from each completed analysis fit.
+        inference : {'legacy', 'small_sample'}, keyword-only
+            Inference mode for the pooled results.  ``'legacy'`` (the
+            default) keeps the original point estimate, total covariance
+            and normal-approximation summary.  ``'small_sample'`` enables
+            finite-sample inference: Barnard--Rubin adjusted degrees of
+            freedom for scalar contrasts and Li--Raghunathan--Rubin
+            pooled Wald F tests for joint hypotheses.  The small-sample
+            mode currently supports at least two non-robust, full rank
+            OLS analysis fits with positive residual degrees of freedom.
+        df_complete : float, np.inf or None, keyword-only
+            Complete-data residual degrees of freedom used for every
+            contrast in ``'small_sample'`` mode.  If None, all fits must
+            report the same positive finite residual degrees of
+            freedom, otherwise an explicit value must be supplied here.
+            ``np.inf`` selects the large-sample (normal/chi-square)
+            limit.  Ignored in ``'legacy'`` mode.
 
         Returns
         -------
         A MIResults object.
         """
+        df_complete = _validate_inference_kwds(
+            inference, df_complete, self.nrep)
+        self.inference = inference
+        self.df_complete = df_complete
 
         par, cov = [], []
         all_results = []
+        small_sample_fits = []
 
         for k in range(self.nrep):
 
@@ -326,12 +357,31 @@ class MI:
             if results_cb is not None:
                 all_results.append(results_cb(result))
 
-            par.append(np.asarray(result.params.copy()))
-            cov.append(np.asarray(result.cov_params().copy()))
+            if inference == "small_sample":
+                # Validate and compact the real completed fit before any
+                # generic pooling, so unmergeable results fail here with
+                # the imputation index rather than as an opaque stacking
+                # error.  Never requires retaining the result via
+                # results_cb.
+                small_sample_fits.append(_extract_fit(result, k + 1))
+            else:
+                par.append(np.asarray(result.params.copy()))
+                cov.append(np.asarray(result.cov_params().copy()))
 
-        params, cov_params, fmi = self._combine(par, cov)
-
-        r = MIResults(self, model, params, cov_params)
+        if inference == "small_sample":
+            # Pool and validate by name alignment before the generic
+            # array-based combining rule, so incompatible fits raise a
+            # located ValueError instead of an opaque stacking error.
+            pooled = MIPooledInference(small_sample_fits, df_complete)
+            params = pooled.params
+            cov_params = pooled.cov_total
+            fmi = pooled.frac_miss_info
+            r = MIResultsSmallSample(self, model, params, cov_params,
+                                     pooled_inference=pooled)
+            r.df_complete = pooled.df_complete
+        else:
+            params, cov_params, fmi = self._combine(par, cov)
+            r = MIResults(self, model, params, cov_params)
         r.fmi = fmi
 
         r.results = all_results
@@ -389,6 +439,18 @@ class MIResults(LikelihoodModelResults):
         self.mi = mi
         self._model = model
 
+    @property
+    def df_resid(self):
+        """Residual degrees of freedom of the analysis fits.
+
+        The completed-data fits all use the same design, so the last
+        fit's residual df is representative; the normal-approximation
+        legacy inference does not itself consume this value, but
+        exposing it makes the standard linear-contrast entry points
+        (``t_test``, ``wald_test``) usable.
+        """
+        return getattr(self._model, "df_resid", np.nan)
+
     def summary(self, title=None, alpha=.05):
         """
         Summarize the results of running multiple imputation.
@@ -429,3 +491,42 @@ class MIResults(LikelihoodModelResults):
         smry.add_title(title=title, results=self)
 
         return smry
+
+
+class MIResultsSmallSample(SmallSampleMIResultsMixin, MIResults):
+    """
+    MI results with finite-sample (Barnard--Rubin / LRR) inference.
+
+    The Rubin point estimates and total covariance are identical to the
+    legacy results; only the inferential layer (reference distribution,
+    degrees of freedom and tests) changes.
+    """
+
+    def __init__(self, mi, model, params, cov_params,
+                 pooled_inference=None):
+        # Store the full (unnormalized) Rubin covariance directly.
+        super().__init__(mi, model, params, cov_params)
+        self.cov_params_default = np.asarray(cov_params, dtype=float)
+        self._use_t = True
+        self._mi_inference = pooled_inference
+        self._attach_name_data(
+            design_info=getattr(model.data, "design_info", None))
+
+    def summary(self, title=None, alpha=.05):
+        """
+        Summarize finite-sample multiple imputation results.
+
+        The parameter table reports the Student-t based test using each
+        parameter's own Barnard--Rubin denominator degrees of freedom
+        (``df_denom``) and the fraction of missing information (FMI).
+        """
+        info = {
+            "Method:": "MI",
+            "Model:": self.mi.model.__name__,
+            "Dependent variable:": self._model.endog_names,
+            "Sample size:": "%d" % self.mi.imp.data.shape[0],
+            "Num. imputations": "%d" % self.mi.nrep,
+            "df complete": ("%.3g" % self.df_complete
+                            if np.isfinite(self.df_complete) else "inf"),
+        }
+        return self._small_sample_summary(info, alpha=alpha)

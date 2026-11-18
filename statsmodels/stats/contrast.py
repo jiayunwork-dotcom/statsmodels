@@ -160,10 +160,24 @@ class ContrastResults:
                    (self.statistic, self.pvalue))
 
 
-    def summary_frame(self, xname=None, alpha=0.05):
+    def summary_frame(self, xname=None, alpha=0.05, include_df_denom=False):
         """Return the parameter table as a pandas DataFrame
 
-        This is only available for t and normal tests
+        This is only available for t and normal tests.
+
+        Parameters
+        ----------
+        xname : list[str], optional
+            Names for the rows of the table.
+        alpha : float
+            Significance level for the confidence intervals.
+        include_df_denom : bool
+            If True and the test uses the Student's t distribution with a
+            per-contrast denominator degrees of freedom (as in
+            finite-sample multiple imputation inference), append a
+            ``df_denom`` column holding the degrees of freedom used for
+            every marginal contrast.  The default (False) preserves the
+            historical columns and their meaning unchanged.
         """
         if self.effect is not None:
             # we have everything for a params table
@@ -177,6 +191,13 @@ class ContrastResults:
                                          self.conf_int(alpha)), yname=yname,
                                          xname=xname, use_t=use_t,
                                          alpha=alpha)
+            if include_df_denom or getattr(self,
+                                           "mi_include_df_denom", False):
+                df_denom = getattr(self, "df_denom", None)
+                if use_t and df_denom is not None:
+                    df_denom = np.atleast_1d(np.squeeze(df_denom))
+                    if df_denom.shape[0] == summ.shape[0]:
+                        summ["df_denom"] = df_denom
             return summ
         else:
             # TODO: create something nicer

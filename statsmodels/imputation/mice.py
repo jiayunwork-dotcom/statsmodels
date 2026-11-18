@@ -122,6 +122,13 @@ from statsmodels.base.model import LikelihoodModelResults
 from statsmodels.regression.linear_model import OLS
 from collections import defaultdict
 
+from statsmodels.imputation._mi_inference import (
+    MIPooledInference,
+    SmallSampleMIResultsMixin,
+    _extract_fit,
+    _validate_inference_kwds,
+)
+
 
 _mice_data_example_1 = """
     >>> imp = mice.MICEData(data)
@@ -1190,7 +1197,8 @@ class MICE:
 
         return result
 
-    def fit(self, n_burnin=10, n_imputations=10):
+    def fit(self, n_burnin=10, n_imputations=10, *,
+            inference='legacy', df_complete=None):
         """
         Fit a model using MICE.
 
@@ -1200,7 +1208,27 @@ class MICE:
             The number of burn-in cycles to skip.
         n_imputations : int
             The number of data sets to impute
+        inference : {'legacy', 'small_sample'}, keyword-only
+            Inference mode for the pooled results.  ``'legacy'`` (the
+            default) keeps the original point estimate, total covariance
+            and normal-approximation summary.  ``'small_sample'`` enables
+            finite-sample inference: Barnard--Rubin adjusted degrees of
+            freedom for scalar contrasts and Li--Raghunathan--Rubin
+            pooled Wald F tests for joint hypotheses.  The small-sample
+            mode currently supports at least two non-robust, full rank
+            OLS analysis fits with positive residual degrees of freedom.
+        df_complete : float, np.inf or None, keyword-only
+            Complete-data residual degrees of freedom used for every
+            contrast in ``'small_sample'`` mode.  If None, all fits must
+            report the same positive finite residual degrees of
+            freedom, otherwise an explicit value must be supplied here.
+            ``np.inf`` selects the large-sample (normal/chi-square)
+            limit.  Ignored in ``'legacy'`` mode.
         """
+        df_complete = _validate_inference_kwds(
+            inference, df_complete, n_imputations)
+        self.inference = inference
+        self.df_complete = df_complete
 
         # Run without fitting the analysis model
         self.data.update_all(n_burnin)
@@ -1214,7 +1242,7 @@ class MICE:
 
         return self.combine()
 
-    def combine(self):
+    def combine(self, *, inference=None, df_complete=None):
         """
         Pools MICE imputation results.
 
@@ -1222,21 +1250,73 @@ class MICE:
         called.  Returns estimates and standard errors of the analysis
         model parameters.
 
+        Parameters
+        ----------
+        inference : {'legacy', 'small_sample'} or None, keyword-only
+            If None, the mode stored by the most recent :meth:`fit` is
+            used (defaulting to ``'legacy'``).  See :meth:`fit` for the
+            meaning of the modes.
+        df_complete : float, np.inf or None, keyword-only
+            See :meth:`fit`.
+
         Returns a MICEResults instance.
         """
+        if inference is None:
+            inference = getattr(self, "inference", "legacy")
+        if df_complete is None:
+            df_complete = getattr(self, "df_complete", None)
+        if inference not in ("legacy", "small_sample"):
+            raise ValueError(
+                "inference must be 'legacy' or 'small_sample'")
+        if inference == "small_sample":
+            df_complete = _validate_inference_kwds(
+                inference, df_complete, len(self.results_list))
 
         # Extract a few things from the models that were fit to
         # imputed data sets.
         params_list = []
         cov_within = 0.
         scale_list = []
-        for results in self.results_list:
+        small_sample_fits = []
+        for j, results in enumerate(self.results_list, start=1):
             results_uw = results._results
-            params_list.append(results_uw.params)
+            if inference == "small_sample":
+                # Validate and compact the real completed fit first so
+                # unmergeable results fail here with the imputation
+                # index rather than as an opaque stacking error.
+                info = _extract_fit(results, j)
+                small_sample_fits.append(info)
+            else:
+                params_list.append(results_uw.params)
             cov_within += results_uw.cov_params()
             scale_list.append(results.scale)
-        params_list = np.asarray(params_list)
         scale_list = np.asarray(scale_list)
+        scale = np.mean(scale_list)
+
+        # Expose pooled parameter names on the MICEData object so the
+        # generic LikelihoodModelResults contrast machinery can resolve
+        # both string and numeric constraints.
+        self.data.cov_names = list(self.exog_names)
+        self.data.param_names = list(self.exog_names)
+        design_info = getattr(
+            self.results_list[-1].model.data, "design_info", None)
+
+        if inference == "small_sample":
+            # Name-aligned pooling runs before any generic array
+            # stacking, giving located, merge-aware errors.
+            pooled = MIPooledInference(small_sample_fits, df_complete)
+            results = MICEResultsSmallSample(
+                self, pooled.params, pooled.cov_total,
+                pooled_inference=pooled, design_info=design_info)
+            results.scale = scale
+            results.frac_miss_info = pooled.frac_miss_info
+            results.exog_names = self.exog_names
+            results.endog_names = self.endog_names
+            results.model_class = self.model_class
+            results.df_complete = pooled.df_complete
+            return results
+
+        params_list = np.asarray(params_list)
 
         # The estimated parameters for the MICE analysis
         params = params_list.mean(0)
@@ -1255,13 +1335,19 @@ class MICE:
         fmi = f * np.diag(cov_between) / np.diag(cov_params)
 
         # Set up a results instance
-        scale = np.mean(scale_list)
         results = MICEResults(self, params, cov_params / scale)
         results.scale = scale
         results.frac_miss_info = fmi
         results.exog_names = self.exog_names
         results.endog_names = self.endog_names
         results.model_class = self.model_class
+        # Provide parameter-name metadata so the standard linear
+        # contrast entry points can resolve names against the
+        # pooled parameters (the result's model.data is a MICEData
+        # object that does not carry cov_names).
+        from statsmodels.imputation._mi_inference import _MIResultData
+        results._mi_data = _MIResultData(
+            self.exog_names, design_info=design_info)
 
         return results
 
@@ -1272,6 +1358,25 @@ class MICEResults(LikelihoodModelResults):
 
         super().__init__(model, params,
                                           normalized_cov_params)
+
+    @property
+    def df_resid(self):
+        """Residual degrees of freedom of the completed-data fits.
+
+        Exposed so that the standard linear-contrast entry points
+        (``t_test``, ``wald_test``) can resolve their metadata.  The
+        legacy normal-approximation inference does not consume it.
+        """
+        if getattr(self, "_df_resid", None) is not None:
+            return self._df_resid
+        results_list = getattr(self.model, "results_list", [])
+        if results_list:
+            return results_list[-1]._results.df_resid
+        return np.nan
+
+    @df_resid.setter
+    def df_resid(self, value):
+        self._df_resid = value
 
     def summary(self, title=None, alpha=.05):
         """
@@ -1314,3 +1419,42 @@ class MICEResults(LikelihoodModelResults):
         smry.add_title(title=title, results=self)
 
         return smry
+
+
+class MICEResultsSmallSample(SmallSampleMIResultsMixin, MICEResults):
+    """
+    MICE results with finite-sample (Barnard--Rubin / LRR) inference.
+
+    The Rubin point estimates and total covariance are identical to the
+    legacy results; only the inferential layer (reference distribution,
+    degrees of freedom and tests) changes.
+    """
+
+    def __init__(self, model, params, cov_params,
+                 pooled_inference=None, design_info=None):
+        # Store the full (unnormalized) Rubin covariance directly.
+        super().__init__(model, params, cov_params)
+        self.cov_params_default = np.asarray(cov_params, dtype=float)
+        self._use_t = True
+        self._mi_inference = pooled_inference
+        self._attach_name_data(design_info=design_info)
+
+    def summary(self, title=None, alpha=.05):
+        """
+        Summarize finite-sample MICE results.
+
+        The parameter table reports the Student-t based test using each
+        parameter's own Barnard--Rubin denominator degrees of freedom
+        (``df_denom``) and the fraction of missing information (FMI).
+        """
+        info = {
+            "Method:": "MICE",
+            "Model:": self.model_class.__name__,
+            "Dependent variable:": self.endog_names,
+            "Sample size:": "%d" % self.model.data.data.shape[0],
+            "Scale": "%.2f" % self.scale,
+            "Num. imputations": "%d" % self.mi_inference.m,
+            "df complete": ("%.3g" % self.df_complete
+                            if np.isfinite(self.df_complete) else "inf"),
+        }
+        return self._small_sample_summary(info, alpha=alpha)
