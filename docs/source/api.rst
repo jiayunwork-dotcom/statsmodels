@@ -92,6 +92,7 @@ Other Models
 
    ~statsmodels.regression.mixed_linear_model.MixedLM
    ~statsmodels.duration.survfunc.SurvfuncRight
+   ~statsmodels.duration.survfunc.CumIncidenceRight
    ~statsmodels.duration.hazard_regression.PHReg
    ~statsmodels.regression.quantile_regression.QuantReg
    ~statsmodels.robust.robust_linear_model.RLM

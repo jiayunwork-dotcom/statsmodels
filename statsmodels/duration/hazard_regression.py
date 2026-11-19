@@ -51,6 +51,14 @@ _predict_docstring = """
         If 'lhr', returns log hazard ratios, if 'hr' returns
         hazard ratios, if 'surv' returns the survival function, if
         'cumhaz' returns the cumulative hazard function.
+    post_event : bool, optional
+        Only used when `pred_type` is 'surv' or 'cumhaz'.  If False
+        (default), the prediction at an event time excludes the
+        cumulative hazard jump at that time (left-continuous step
+        convention).  If True, the prediction includes the jump at
+        the queried time, is zero before the first event time, and
+        carries the final jump forward (right-continuous, post-event
+        convention).
     pred_only : bool
         If True, returns only an array of predicted values.  Otherwise
         returns a bunch containing the predicted values and standard
@@ -1099,7 +1107,7 @@ class PHReg(model.LikelihoodModel):
 
         return averages
 
-    def baseline_cumulative_hazard(self, params):
+    def baseline_cumulative_hazard(self, params, post_event=False):
         """
         Estimate the baseline cumulative hazard and survival
         functions.
@@ -1108,6 +1116,18 @@ class PHReg(model.LikelihoodModel):
         ----------
         params : ndarray
             The model parameters.
+        post_event : bool, optional
+            If False (default), the cumulative hazard and survival are
+            evaluated just *before* each event time, i.e. using the
+            left-continuous Nelson-Aalen step function, so the value at
+            an event time does not include the hazard jump at that
+            time.  If True, the right-continuous, "post-event" step
+            function is returned: the value is zero before the first
+            event time, includes the cumulative hazard jump *at* each
+            event time, and the final jump is carried forward to all
+            later times.  The per-event baseline hazard jumps (the
+            increments of the Nelson-Aalen estimator) are identical in
+            either case.
 
         Returns
         -------
@@ -1157,13 +1177,22 @@ class PHReg(model.LikelihoodModel):
                 ix = surv.risk_exit[stx][i]
                 xp0 -= e_linpred[ix].sum()
 
-            cumhaz = np.cumsum(h0) - h0
+            if post_event:
+                # Right-continuous step function: at each event time the
+                # jump at that time is included, and the final value is
+                # carried forward.
+                cumhaz = np.cumsum(h0)
+            else:
+                # Left-continuous step function: the jump at an event
+                # time is not yet included at that time.
+                cumhaz = np.cumsum(h0) - h0
             current_strata_surv = np.exp(-cumhaz)
             rslt.append([uft, cumhaz, current_strata_surv])
 
         return rslt
 
-    def baseline_cumulative_hazard_function(self, params):
+    def baseline_cumulative_hazard_function(self, params,
+                                            post_event=False):
         """
         Returns a function that calculates the baseline cumulative
         hazard function for each stratum.
@@ -1172,6 +1201,15 @@ class PHReg(model.LikelihoodModel):
         ----------
         params : ndarray
             The model parameters.
+        post_event : bool, optional
+            If False (default), the returned functions use the
+            left-continuous step convention: evaluating at an event
+            time excludes the jump at that time.  If True, the
+            returned functions use the right-continuous, post-event
+            convention: they are zero before the first event time,
+            include the jump at an event time when evaluated at that
+            time, and carry the final jump forward.  See
+            :meth:`baseline_cumulative_hazard` for details.
 
         Returns
         -------
@@ -1181,16 +1219,43 @@ class PHReg(model.LikelihoodModel):
 
         from scipy.interpolate import interp1d
         surv = self.surv
-        base = self.baseline_cumulative_hazard(params)
+        base = self.baseline_cumulative_hazard(params,
+                                               post_event=post_event)
 
         cumhaz_f = {}
         for stx in range(surv.nstrat):
             time_h = base[stx][0]
             cumhaz = base[stx][1]
-            time_h = np.r_[-np.inf, time_h, np.inf]
-            cumhaz = np.r_[cumhaz[0], cumhaz, cumhaz[-1]]
-            func = interp1d(time_h, cumhaz, kind='zero')
-            cumhaz_f[self.surv.stratum_names[stx]] = func
+            if post_event:
+                # Right-continuous step function implemented without
+                # interp1d, which only provides left-continuous zero
+                # order interpolation.  A query time t receives the
+                # cumulative hazard value at the greatest event time
+                # that is less than or equal to t, and zero before the
+                # first event time.
+                def _make_func(uft, ch):
+                    uft = np.asarray(uft, dtype=np.float64)
+                    ch = np.asarray(ch, dtype=np.float64)
+
+                    def func(x):
+                        xarr = np.asarray(x, dtype=np.float64)
+                        scalar = xarr.ndim == 0
+                        xarr = np.atleast_1d(xarr)
+                        ix = np.searchsorted(uft, xarr, side="right") - 1
+                        out = np.zeros(len(xarr), dtype=np.float64)
+                        ii = ix >= 0
+                        out[ii] = ch[ix[ii]]
+                        if scalar:
+                            return out[0]
+                        return out
+                    return func
+                cumhaz_f[self.surv.stratum_names[stx]] = \
+                    _make_func(time_h, cumhaz)
+            else:
+                time_h = np.r_[-np.inf, time_h, np.inf]
+                cumhaz = np.r_[cumhaz[0], cumhaz, cumhaz[-1]]
+                func = interp1d(time_h, cumhaz, kind='zero')
+                cumhaz_f[self.surv.stratum_names[stx]] = func
 
         return cumhaz_f
 
@@ -1198,7 +1263,8 @@ class PHReg(model.LikelihoodModel):
         'params_doc': _predict_params_doc,
         'cov_params_doc': _predict_cov_params_docstring})
     def predict(self, params, exog=None, cov_params=None, endog=None,
-                strata=None, offset=None, pred_type="lhr", pred_only=False):
+                strata=None, offset=None, pred_type="lhr", pred_only=False,
+                post_event=False):
 
         # This function breaks mediation, because it does not simply
         # return the predicted values as an array.
@@ -1268,7 +1334,8 @@ class PHReg(model.LikelihoodModel):
 
         cumhaz = np.nan * np.ones(len(endog), dtype=np.float64)
         stv = np.unique(strata)
-        bhaz = self.baseline_cumulative_hazard_function(params)
+        bhaz = self.baseline_cumulative_hazard_function(
+            params, post_event=post_event)
         for stx in stv:
             ix = np.flatnonzero(strata == stx)
             func = bhaz[stx]
@@ -1450,14 +1517,16 @@ class PHRegResults(base.LikelihoodModelResults):
 
     @Appender(_predict_docstring % {'params_doc': '', 'cov_params_doc': ''})
     def predict(self, endog=None, exog=None, strata=None,
-                offset=None, transform=True, pred_type="lhr"):
+                offset=None, transform=True, pred_type="lhr",
+                post_event=False):
         return super().predict(exog=exog,
                                                  transform=transform,
                                                  cov_params=self.cov_params(),
                                                  endog=endog,
                                                  strata=strata,
                                                  offset=offset,
-                                                 pred_type=pred_type)
+                                                 pred_type=pred_type,
+                                                 post_event=post_event)
 
     def _group_stats(self, groups):
         """

@@ -181,6 +181,127 @@ depending on the value of the covariates.
    print(rslt.summary())
 
 
+Competing risks and interval failure probabilities
+---------------------------------------------------
+
+A device (or patient) may leave the risk set through more than one
+cause.  Fitting one :class:`PHReg` model per failure cause is not
+enough on its own: the separate single-outcome survival curves do not
+account for the competing causes and cannot be interpreted as the
+marginal probability of each failure.  ``CumIncidenceRight`` combines
+the cause-specific Cox fits into proper cumulative incidence
+probabilities, and answers *interval* questions of the form
+"conditional on running failure-free up to an inspection time
+``origin``, what is the probability of failing from each cause, or of
+still running, by each future query time?".
+
+The cause-specific models use the usual analysis table with one row
+per subject, the same exit time, entry time, strata, numeric design
+matrix and offset in every model; a subject that fails from one cause
+is right censored at its exit time in all the other cause models.
+Efron or Breslow tie handling, delayed entry, stratification and
+offsets are all supported.  Only unregularized fits are accepted.
+
+.. ipython:: python
+   :okexcept:
+   :okwarning:
+
+   import numpy as np
+   from statsmodels.duration.hazard_regression import PHReg
+   from statsmodels.duration.survfunc import CumIncidenceRight
+
+   rng = np.random.default_rng(0)
+   n = 200
+   x = rng.normal(size=(n, 2))
+   t1 = -np.log(rng.uniform(size=n)) / np.exp(x @ [0.5, -0.3])
+   t2 = -np.log(rng.uniform(size=n)) / np.exp(x @ [-0.2, 0.4]) * 2
+   tc = rng.uniform(0.5, 6, size=n)
+   time = np.minimum(np.minimum(t1, t2), tc)
+   status = np.where(t1 <= np.minimum(t2, tc), 1,
+                     np.where(t2 <= tc, 2, 0))
+   fit_motor = PHReg(time, x, (status == 1).astype(float)).fit()
+   fit_sensor = PHReg(time, x, (status == 2).astype(float)).fit()
+   ci = CumIncidenceRight.from_phreg(
+       {"motor": fit_motor, "sensor": fit_sensor})
+
+The query takes a finite non-negative ``origin`` that is assumed to
+have been survived failure-free, and a non-decreasing sequence of
+future query times (repeated times and times equal to the origin are
+allowed).  In fitted mode it also takes the prediction design matrix,
+one stratum per row and optional prediction offsets.
+
+.. ipython:: python
+   :okexcept:
+   :okwarning:
+
+   query = ci.predict(1.0, np.array([1.0, 2.0, 3.0, 5.0]),
+                      exog=x[:3], strata=np.zeros(3, dtype=int))
+   query
+
+Each row sums to one.  Cause columns are the conditional probability
+of failure from that cause within ``(origin, time]``; the
+``"__failure_free__"`` column is ``P(T > time | T > origin)``.  Cause
+probabilities are non-decreasing and the failure-free probability is
+non-increasing in time.  Splitting an interval at an intermediate
+inspection reproduces the whole-interval probabilities:
+
+.. math::
+
+   P_j(t_2) = P_j(t_1) + S(t_1)\,P_j(t_2 \mid t_1), \qquad
+   S(t_2) = S(t_1)\,S(t_2 \mid t_1).
+
+Post-event hazard convention
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``PHReg.baseline_cumulative_hazard`` and the ``surv`` / ``cumhaz``
+predictions default to the historical left-continuous convention, in
+which the value at an event time excludes the hazard jump at that
+time.  Passing ``post_event=True`` selects the right-continuous,
+post-event convention used throughout the competing-risk calculations:
+the cumulative hazard is zero before the first event, includes the
+jump at each event time, and carries the final jump forward.  With a
+single cause, the competing-risk failure-free probability reduces
+exactly to the ratio of post-event PHReg survival predictions
+``S(t) / S(origin)``.
+
+Same-day competing events
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When several causes have hazard jumps at the same time, the survival
+probability lost on that day is apportioned across causes in
+proportion to their scaled hazard jumps.  Equal jumps therefore
+receive equal probability, a cause with a zero jump receives no
+probability, and the apportioned masses plus the remaining survival
+sum exactly to one.  This is the standard Aalen-Johansen rule and
+implicitly assumes that, within a day, the tied cause-specific
+hazards act as independent constant hazards over infinitesimal
+orderings of the tied events.  If event times are coarsened (for
+example recorded only to the day when the true ordering is finer),
+the within-day split is not separately identifiable from the data;
+recording times on a finer grid changes which events share a day and
+hence changes the apportionment, though the total daily event mass
+is unaffected.
+
+Empirical curves
+^^^^^^^^^^^^^^^^
+
+A ``CumIncidenceRight`` built directly from raw ``time`` and
+``status`` arrays (the empirical Aalen-Johansen estimator) supports
+the same ``predict`` query.  This first version supports only the
+unweighted estimator without ``exog`` adjustment; frequency-weighted
+or kernel-adjusted curves raise an error when queried.  A query whose
+origin has no remaining survivable probability mass is also rejected,
+because the requested conditional probabilities are then undefined.
+
+.. ipython:: python
+   :okexcept:
+   :okwarning:
+
+   from statsmodels.duration.survfunc import CumIncidenceRight as CIR
+   emp = CIR(time, status)
+   emp.predict(0.0, np.array([1.0, 3.0, 6.0]))
+
+
 See :ref:`statsmodels-examples` for more detailed examples.
 
 
@@ -222,6 +343,7 @@ The class for working with survival distributions is:
    :toctree: generated/
 
    SurvfuncRight
+   CumIncidenceRight
 
 .. module:: statsmodels.duration.hazard_regression
    :synopsis: Proportional hazards model for Survival Analysis
