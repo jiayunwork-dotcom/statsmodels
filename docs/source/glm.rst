@@ -82,6 +82,41 @@ Tweedie :math:`p\geq 1`                           depends on :math:`p`          
 The Tweedie distribution has special cases for :math:`p=0,1,2` not listed in the
 table and uses :math:`\alpha=\frac{p-2}{p-1}`.
 
+Exposure, Offset and Prediction
+-------------------------------
+
+``exposure`` and ``offset`` are added to the linear predictor with a
+coefficient constrained to one.  Both are stored internally on the log scale
+for models with a log link, but the public ``exposure`` argument is always the
+raw exposure; ``predict`` and ``get_prediction`` take the logarithm
+internally.  Multiplying the exposure by a positive constant :math:`c`
+multiplies the mean and its standard error by :math:`c` and shifts the linear
+prediction by :math:`\log(c)` without changing its standard error.  Adding the
+same amount as an offset, ``offset=log(c)``, is equivalent to
+``exposure=c``.  An ``exposure`` must be strictly positive and finite; an
+``offset`` must be finite and may have either sign.
+
+Prediction requests follow one set of source rules for both the direct
+``predict`` methods and the inferential ``get_prediction``:
+
+* if ``exog`` is not given, the exposure and offset used to fit the model are
+  the defaults;
+* if ``exog`` is given, the fitted exposure and offset are dropped, even if
+  the supplied design matrix equals the training matrix;
+* an explicitly supplied ``exposure`` or ``offset`` overrides its own fitted
+  value; the other term still follows the ``exog`` rule.
+
+A scalar exposure or offset broadcasts over the prediction rows, while a one
+dimensional array must have one entry per row and is used positionally
+(pandas indexes are not used for alignment).
+
+With ``average=True`` in ``get_prediction`` the per-row predictions are
+multiplied by ``agg_weights`` and divided by the number of rows.  The weights
+are not normalized.  The uncertainty of the average is based on the joint
+variation of the estimated parameters, not on averaging the per-row standard
+errors; the reported confidence interval is therefore the interval of the
+average, not an average of per-row intervals.
+
 Correspondence of mathematical variables to code:
 
 * :math:`Y` and :math:`y` are coded as ``endog``, the variable one wants to

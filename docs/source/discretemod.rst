@@ -50,6 +50,30 @@ structure, which is similar to the regression results but with some methods
 specific to discrete models. Additionally some of them contain additional model
 specific methods and attributes.
 
+Exposure, Offset and Prediction
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The count models ``Poisson``, ``NegativeBinomial``,
+``NegativeBinomialP`` and ``GeneralizedPoisson`` accept ``exposure`` and
+``offset``.  They follow the same conventions as GLM.  In particular:
+
+* ``exposure`` is the raw exposure and must be strictly positive and finite;
+  it is logged internally.  ``offset`` is added directly and may be negative.
+* If ``predict`` is called without ``exog``, the exposure and offset from the
+  fit are used.  Supplying ``exog`` drops the fitted exposure and offset, even
+  if the supplied matrix equals the training matrix.  Explicitly supplied
+  ``exposure`` or ``offset`` override their own fitted value.
+* Scalars broadcast over the prediction rows; one dimensional arrays must have
+  one entry per row and are used positionally.
+
+These rules apply to ``model.predict``, ``results.predict`` and
+``results.get_prediction`` alike.  ``get_prediction`` supports
+``which="mean"``, ``which="linear"`` and ``which="prob"``; for
+``which="prob"`` the predicted probabilities and their standard errors use the
+same resolved exposure and offset.  With ``average=True`` the per-row values
+are weighted by ``agg_weights`` and divided by the number of rows, without
+normalizing the weights.  The variance of the average is computed from the
+joint parameter covariance.
 
 References
 ^^^^^^^^^^

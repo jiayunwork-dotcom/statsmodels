@@ -170,6 +170,12 @@ def get_prediction(self, exog=None, transform=True, weights=None,
             "calibration"
         )
 
+    # ``exog`` is replaced by the training design when the caller did not
+    # supply one.  Passing that training design explicitly to the model
+    # would, under the shared source rules, drop the fitted exposure and
+    # offset of count models.  Remember the caller's intent.
+    exog_provided = exog is not None
+
     # prepare exog and row_labels, based on base Results.predict
     if transform and hasattr(self.model, 'formula') and exog is not None:
         from patsy import dmatrix
@@ -243,11 +249,13 @@ def get_prediction(self, exog=None, transform=True, weights=None,
                 "exog contains non-finite values; predictions with an "
                 "inference calibration require finite exog"
             )
-        predicted_mean = self.model.predict(self.params, exog, **pred_kwds)
+        predicted_mean = self.model.predict(
+            self.params, exog if exog_provided else None, **pred_kwds)
         return inference._prediction_results(self, exog, predicted_mean,
                                              row_labels)
 
-    predicted_mean = self.model.predict(self.params, exog, **pred_kwds)
+    predicted_mean = self.model.predict(
+        self.params, exog if exog_provided else None, **pred_kwds)
 
     covb = self.cov_params()
     var_pred_mean = (exog * np.dot(covb, exog.T).T).sum(1)

@@ -4,6 +4,7 @@ __all__ = ["ZeroInflatedPoisson", "ZeroInflatedGeneralizedPoisson",
 import warnings
 import numpy as np
 import statsmodels.base.model as base
+import statsmodels.base._prediction_inference as pred
 import statsmodels.base.wrapper as wrap
 import statsmodels.regression.linear_model as lm
 from statsmodels.discrete.discrete_model import (DiscreteModel, CountModel,
@@ -431,26 +432,20 @@ class GenericZeroInflated(CountModel):
             if exog_infl.ndim == 1 and self.k_inflate == 1:
                 exog_infl = exog_infl[:, None]
 
-        if exposure is None:
-            if no_exog:
-                exposure = getattr(self, 'exposure', 0)
-            else:
-                exposure = 0
-        else:
-            exposure = np.log(exposure)
-
-        if offset is None:
-            if no_exog:
-                offset = getattr(self, 'offset', 0)
-            else:
-                offset = 0
+        # shared source rules for the exposure and offset of the main model.
+        # The local names keep the log exposure for the linear predictor and
+        # pass the raw exposure on to the main model.
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, None if no_exog else exog, exposure, offset,
+            nrows=pred.prediction_nrows(self, exog))
 
         params_infl = params[:self.k_inflate]
         params_main = params[self.k_inflate:]
 
         prob_main = 1 - self.model_infl.predict(params_infl, exog_infl)
 
-        lin_pred = np.dot(exog, params_main[:self.exog.shape[1]]) + exposure + offset
+        lin_pred = (np.dot(exog, params_main[:self.exog.shape[1]]) +
+                    log_exposure + offset)
 
         # Refactor: This is pretty hacky,
         # there should be an appropriate predict method in model_main
@@ -462,7 +457,8 @@ class GenericZeroInflated(CountModel):
         self.model_main.exog = exog
         self.model_main.endog = np.zeros(exog.shape[0])
         self.model_main.offset = offset
-        self.model_main.exposure = exposure
+        # the main model stores the exposure on the log scale
+        self.model_main.exposure = log_exposure
         llf = self.model_main.loglikeobs(params_main)
         self.model_main.exog = tmp_exog
         self.model_main.endog = tmp_endog
@@ -497,7 +493,7 @@ class GenericZeroInflated(CountModel):
             mu = np.exp(lin_pred)
             return self._predict_var(params, mu, 1 - prob_main)
         elif which == 'prob':
-            return self._predict_prob(params, exog, exog_infl, exposure,
+            return self._predict_prob(params, exog, exog_infl, log_exposure,
                                       offset, y_values=y_values)
         else:
             raise ValueError('which = %s is not available' % which)
@@ -510,6 +506,16 @@ class GenericZeroInflated(CountModel):
     def _derivative_exog(self, params, exog=None, transform="dydx",
                          dummy_idx=None, count_idx=None):
         """NotImplemented
+        """
+        raise NotImplementedError
+
+    def _predict_deriv(self, params, exog=None, exposure=None, offset=None,
+                       which="mean", **kwds):
+        """No analytic derivative is provided for zero inflated models.
+
+        The total mean combines the inflation probability and the main model
+        mean, so the generic count-model factor does not apply.  The shared
+        inference layer falls back to numerical differentiation.
         """
         raise NotImplementedError
 
@@ -657,7 +663,9 @@ class ZeroInflatedPoisson(GenericZeroInflated):
             w = self.model_infl.predict(params_infl, exog_infl)[:, None]
 
         w = np.clip(w, np.finfo(float).eps, 1 - np.finfo(float).eps)
-        mu = self.model_main.predict(params_main, exog,
+        mu = self.model_main.predict(
+            params_main, exog,
+            exposure=pred.raw_exposure_from_log(exposure),
             offset=offset)[:, None]
         result = self.distribution.pmf(y_values, mu, w)
         return result[0] if transform else result
@@ -798,8 +806,10 @@ class ZeroInflatedGeneralizedPoisson(GenericZeroInflated):
             w = self.model_infl.predict(params_infl, exog_infl)[:, None]
 
         w[w == 1.] = np.nextafter(1, 0)
-        mu = self.model_main.predict(params_main, exog,
-            exposure=exposure, offset=offset)[:, None]
+        mu = self.model_main.predict(
+            params_main, exog,
+            exposure=pred.raw_exposure_from_log(exposure),
+            offset=offset)[:, None]
         result = self.distribution.pmf(y_values, mu, params_main[-1], p, w)
         return result[0] if transform else result
 
@@ -915,8 +925,10 @@ class ZeroInflatedNegativeBinomialP(GenericZeroInflated):
             w = self.model_infl.predict(params_infl, exog_infl)[:, None]
 
         w = np.clip(w, np.finfo(float).eps, 1 - np.finfo(float).eps)
-        mu = self.model_main.predict(params_main, exog,
-            exposure=exposure, offset=offset)[:, None]
+        mu = self.model_main.predict(
+            params_main, exog,
+            exposure=pred.raw_exposure_from_log(exposure),
+            offset=offset)[:, None]
         result = self.distribution.pmf(y_values, mu, params_main[-1], p, w)
         return result[0] if transform else result
 
@@ -971,8 +983,6 @@ class ZeroInflatedResults(CountResults):
                        offset=None, which='mean', average=False,
                        agg_weights=None, y_values=None,
                        transform=True, row_labels=None):
-
-        import statsmodels.base._prediction_inference as pred
 
         pred_kwds = {
             'exog_infl': exog_infl,

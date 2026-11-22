@@ -295,6 +295,23 @@ class TruncatedLFGeneric(CountModel):
         """
         return approx_hess(params, self.loglike)
 
+    def _predict_deriv(self, params, exog=None, exposure=None, offset=None,
+                       which="mean", **kwds):
+        """Only the untruncated mean has a simple row-factored derivative.
+
+        The mean of the truncated distribution and the probabilities involve
+        the truncation probabilities and their derivatives, so they use the
+        shared numerical fallback instead.
+        """
+        if which in ("linear", "mean-main"):
+            super_which = "linear" if which == "linear" else "mean"
+            return super()._predict_deriv(
+                params, exog=exog, exposure=exposure, offset=offset,
+                which=super_which, **kwds)
+        raise NotImplementedError(
+            f'no analytic derivative for which="{which}" in a truncated model'
+        )
+
     def predict(self, params, exog=None, exposure=None, offset=None,
                 which='mean', y_values=None):
         """

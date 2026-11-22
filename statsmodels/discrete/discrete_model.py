@@ -61,6 +61,32 @@ FLOAT_EPS = np.finfo(float).eps
 # Limit for exponentials to avoid overflow
 EXP_UPPER_LIMIT = np.log(np.finfo(np.float64).max) - 1.0
 
+
+def _nbinom_pmf(model, params, mu, y_values):
+    """Negative binomial pmf for ``NegativeBinomial`` and its subclasses.
+
+    ``NegativeBinomial`` stores the dispersion as ``alpha`` and computes the
+    size from its ``loglike_method``; ``NegativeBinomialP`` exposes
+    ``convert_params``.  Both are handled here so that the model's ``predict``
+    can be shared and so that the derivative code can use the same helper.
+    """
+    y_values = np.asarray(y_values)
+    if hasattr(model, "convert_params"):
+        size, prob = model.convert_params(params, mu)
+        return nbinom.pmf(y_values[None, :], size[:, None], prob[:, None])
+
+    if model.loglike_method == "geometric":
+        mu = np.asarray(mu)[:, None]
+        distr = stats.geom(1 / (1 + mu), loc=-1)
+        return distr.pmf(y_values[None, :].astype(np.float64))
+
+    alpha = params[-1]
+    p = 2 if model.loglike_method == "nb2" else 1
+    size = 1. / alpha * mu**(2 - p)
+    prob = size / (size + mu)
+    return nbinom.pmf(y_values[None, :], size[:, None], prob[:, None])
+
+
 # TODO: add options for the parameter covariance/variance
 #       ie., OIM, EIM, and BHHH see Green 21.4
 
@@ -968,30 +994,22 @@ class CountModel(DiscreteModel):
         return kwds
 
     def _get_predict_arrays(self, exog=None, offset=None, exposure=None):
+        """Resolve exog, offset and log-exposure for prediction.
 
-        # convert extras if not None
-        if exposure is not None:
-            exposure = np.log(np.asarray(exposure))
-        if offset is not None:
-            offset = np.asarray(offset)
-
-        # get defaults
+        The source rules are shared with :class:`GLM` through
+        ``statsmodels.base._prediction_inference.resolve_linear_terms``.
+        """
+        exog_provided = exog is not None
         if exog is None:
-            # prediction is in-sample
             exog = self.exog
-            if exposure is None:
-                exposure = getattr(self, 'exposure', 0)
-            if offset is None:
-                offset = getattr(self, 'offset', 0)
         else:
-            # user specified
-            exog = np.asarray(exog)
-            if exposure is None:
-                exposure = 0
-            if offset is None:
-                offset = 0
+            exog = pred.as_2d_exog(self, exog)
 
-        return exog, offset, exposure
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
+
+        return exog, offset, log_exposure
 
     def predict(self, params, exog=None, exposure=None, offset=None,
                 which='mean', linear=None):
@@ -1042,6 +1060,13 @@ class CountModel(DiscreteModel):
         -----
         If exposure is specified, then it will be logged by the method.
         The user does not need to log it first.
+
+        The default source rules are shared with GLM.  If ``exog`` is not
+        given the fitted exposure and offset are used.  Supplying ``exog``
+        drops the fitted exposure and offset, even if ``exog`` equals the
+        training matrix.  An explicitly supplied ``exposure`` or ``offset``
+        overrides only its own fitted value.  ``exposure`` must be strictly
+        positive and finite; ``offset`` must be finite.
         """
         if linear is not None:
             msg = 'linear keyword is deprecated, use which="linear"'
@@ -1049,33 +1074,66 @@ class CountModel(DiscreteModel):
             if linear is True:
                 which = "linear"
 
-        # the following is copied from GLM predict (without family/link check)
-        # Use fit offset if appropriate
-        if offset is None and exog is None and hasattr(self, 'offset'):
-            offset = self.offset
-        elif offset is None:
-            offset = 0.
-
-        # Use fit exposure if appropriate
-        if exposure is None and exog is None and hasattr(self, 'exposure'):
-            # Already logged
-            exposure = self.exposure
-        elif exposure is None:
-            exposure = 0.
-        else:
-            exposure = np.log(exposure)
-
+        exog_provided = exog is not None
         if exog is None:
             exog = self.exog
+        else:
+            exog = pred.as_2d_exog(self, exog)
+
+        # Shared resolution of the default and explicit exposure/offset.
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
 
         fitted = np.dot(exog, params[:exog.shape[1]])
-        linpred = fitted + exposure + offset
+        linpred = fitted + log_exposure + offset
         if which == "mean":
             return np.exp(linpred)
         elif which.startswith("lin"):
             return linpred
         else:
             raise ValueError('keyword which has to be "mean" and "linear"')
+
+    def _predict_deriv(self, params, exog=None, exposure=None, offset=None,
+                       which="mean", **kwds):
+        """Derivative of the prediction with respect to the parameters.
+
+        The exposure and offset are treated as fixed.  Only the parameters
+        multiplying the design matrix enter the derivative; any extra
+        parameters (dispersion) are represented by zero columns, so the
+        returned object has the same parameter dimension as ``params``.
+
+        Returns
+        -------
+        deriv : RowFactoredJacobian
+            Row-factored derivative, factor shape ``(nrows,)``.
+        """
+        exog_provided = exog is not None
+        if exog is None:
+            exog = self.exog
+        else:
+            exog = pred.as_2d_exog(self, exog)
+
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
+
+        linpred = np.dot(exog, params[:exog.shape[1]]) + log_exposure + offset
+        if which == "mean":
+            factor = np.exp(linpred)
+        elif which.startswith("lin"):
+            factor = np.ones_like(linpred)
+        else:
+            raise NotImplementedError(
+                f'no analytic derivative for which="{which}"'
+            )
+
+        exog_full = exog
+        if len(params) > exog.shape[1]:
+            exog_full = np.column_stack(
+                (exog, np.zeros((exog.shape[0], len(params) - exog.shape[1])))
+            )
+        return pred.RowFactoredJacobian(factor, exog_full)
 
     def _derivative_predict(self, params, exog=None, transform='dydx'):
         """
@@ -1716,6 +1774,50 @@ class Poisson(CountModel):
         prob_nz = - np.expm1(-mu)
         return prob_nz
 
+    def _predict_deriv(self, params, exog=None, exposure=None, offset=None,
+                       which="mean", y_values=None, **kwds):
+        """Derivative of the Poisson prediction with respect to params.
+
+        For ``which="prob"`` the derivative of ``P(Y=k)`` is
+        ``P(Y=k) * (k - mu)`` times the design row, so the row factor has
+        shape ``(nrows, k)`` and the full derivative tensor is never built.
+        """
+        if which == "prob":
+            if y_values is not None:
+                counts = np.atleast_2d(y_values).astype(np.float64)
+            else:
+                counts = np.atleast_2d(
+                    np.arange(0, np.max(self.endog) + 1))
+
+            exog_provided = exog is not None
+            if exog is None:
+                exog = self.exog
+            else:
+                exog = pred.as_2d_exog(self, exog)
+            offset, log_exposure = pred.resolve_linear_terms(
+                self, exog if exog_provided else None,
+                exposure, offset, nrows=pred.prediction_nrows(self, exog))
+            mu = np.exp(np.dot(exog, params[:exog.shape[1]]) +
+                        log_exposure + offset)[:, None]
+            probs = stats.poisson._pmf(counts, mu)
+            # probs has shape (nrows, k)
+            factor = probs * (counts - mu)
+
+            exog_full = exog
+            if len(params) > exog.shape[1]:
+                exog_full = np.column_stack(
+                    (exog,
+                     np.zeros((exog.shape[0], len(params) - exog.shape[1])))
+                )
+            return pred.RowFactoredJacobian(factor, exog_full)
+
+        if which == "var":
+            # the Poisson variance equals the mean
+            which = "mean"
+        return super()._predict_deriv(
+            params, exog=exog, exposure=exposure, offset=offset, which=which,
+            **kwds)
+
     def _var(self, mu, params=None):
         """variance implied by the distribution
 
@@ -2239,19 +2341,18 @@ class GeneralizedPoisson(CountModel):
     def predict(self, params, exog=None, exposure=None, offset=None,
                 which='mean', y_values=None):
 
+        exog_provided = exog is not None
         if exog is None:
             exog = self.exog
+        else:
+            exog = pred.as_2d_exog(self, exog)
 
-        if exposure is None:
-            exposure = getattr(self, 'exposure', 0)
-        elif exposure != 0:
-            exposure = np.log(exposure)
-
-        if offset is None:
-            offset = getattr(self, 'offset', 0)
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
 
         fitted = np.dot(exog, params[:exog.shape[1]])
-        linpred = fitted + exposure + offset
+        linpred = fitted + log_exposure + offset
 
         if which == 'mean':
             return np.exp(linpred)
@@ -2266,8 +2367,7 @@ class GeneralizedPoisson(CountModel):
         elif which == 'prob':
             if y_values is None:
                 y_values = np.atleast_2d(np.arange(0, np.max(self.endog)+1))
-            mu = self.predict(params, exog=exog, exposure=exposure,
-                              offset=offset)[:, None]
+            mu = np.exp(linpred)[:, None]
             return genpoisson_p.pmf(y_values, mu, params[-1],
                                     self.parameterization + 1)
         else:
@@ -3636,29 +3736,37 @@ class NegativeBinomial(CountModel):
 
         # avoid duplicate computation for get-distribution
         if which == "prob":
-            distr = self.get_distribution(
-                params,
-                exog=exog,
-                exposure=exposure,
-                offset=offset
-                )
+            exog_provided = exog is not None
+            if exog is None:
+                exog = self.exog
+            else:
+                exog = pred.as_2d_exog(self, exog)
+            offset, log_exposure = pred.resolve_linear_terms(
+                self, exog if exog_provided else None,
+                exposure, offset, nrows=pred.prediction_nrows(self, exog))
+            mu = np.exp(np.dot(exog, params[:exog.shape[1]]) +
+                        log_exposure + offset)
             if y_values is None:
                 y_values = np.arange(0, np.max(self.endog) + 1)
             else:
                 y_values = np.asarray(y_values)
 
-            assert y_values.ndim == 1
-            y_values = y_values[..., None]
-            return distr.pmf(y_values).T
+            if y_values.ndim > 1:
+                raise ValueError("y_values must be one dimensional")
+            return _nbinom_pmf(self, params, mu, y_values)
 
-        exog, offset, exposure = self._get_predict_arrays(
-            exog=exog,
-            offset=offset,
-            exposure=exposure
-            )
+        exog_provided = exog is not None
+        if exog is None:
+            exog = self.exog
+        else:
+            exog = pred.as_2d_exog(self, exog)
+
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
 
         fitted = np.dot(exog, params[:exog.shape[1]])
-        linpred = fitted + exposure + offset
+        linpred = fitted + log_exposure + offset
         if which == "mean":
             return np.exp(linpred)
         elif which.startswith("lin"):
@@ -4311,19 +4419,18 @@ class NegativeBinomialP(CountModel):
     def predict(self, params, exog=None, exposure=None, offset=None,
                 which='mean', y_values=None):
 
+        exog_provided = exog is not None
         if exog is None:
             exog = self.exog
+        else:
+            exog = pred.as_2d_exog(self, exog)
 
-        if exposure is None:
-            exposure = getattr(self, 'exposure', 0)
-        elif exposure != 0:
-            exposure = np.log(exposure)
-
-        if offset is None:
-            offset = getattr(self, 'offset', 0)
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
 
         fitted = np.dot(exog, params[:exog.shape[1]])
-        linpred = fitted + exposure + offset
+        linpred = fitted + log_exposure + offset
 
         if which == 'mean':
             return np.exp(linpred)
@@ -4339,7 +4446,7 @@ class NegativeBinomialP(CountModel):
             if y_values is None:
                 y_values = np.atleast_2d(np.arange(0, np.max(self.endog)+1))
 
-            mu = self.predict(params, exog, exposure, offset)
+            mu = np.exp(linpred)
             size, prob = self.convert_params(params, mu)
             return nbinom.pmf(y_values, size[:, None], prob[:, None])
         else:

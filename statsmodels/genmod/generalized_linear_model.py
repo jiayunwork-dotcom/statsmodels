@@ -986,30 +986,24 @@ class GLM(base.LikelihoodModel):
             if linear is True:
                 which = "linear"
 
-        # Use fit offset if appropriate
-        if offset is None and exog is None and hasattr(self, 'offset'):
-            offset = self.offset
-        elif offset is None:
-            offset = 0.
-
         if exposure is not None and not isinstance(self.family.link,
                                                    families.links.Log):
             raise ValueError("exposure can only be used with the log link "
                              "function")
 
-        # Use fit exposure if appropriate
-        if exposure is None and exog is None and hasattr(self, 'exposure'):
-            # Already logged
-            exposure = self.exposure
-        elif exposure is None:
-            exposure = 0.
-        else:
-            exposure = np.log(np.asarray(exposure))
-
+        exog_provided = exog is not None
         if exog is None:
             exog = self.exog
+        else:
+            exog = pred.as_2d_exog(self, exog)
 
-        linpred = np.dot(exog, params) + offset + exposure
+        # Resolve default and explicit exposure/offset.  Stored values are
+        # kept in log space; explicit exposures are validated and logged.
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
+
+        linpred = np.dot(exog, params) + offset + log_exposure
 
         if which == "mean":
             return self.family.fitted(linpred)
@@ -1021,6 +1015,43 @@ class GLM(base.LikelihoodModel):
             return var_
         else:
             raise ValueError(f'The which value "{which}" is not recognized')
+
+    def _predict_deriv(self, params, exog=None, exposure=None, offset=None,
+                       which="mean"):
+        """Derivative of the predicted statistic with respect to params.
+
+        The exposure and offset are held fixed, so the derivative only
+        contains the design matrix and the derivative of the link.
+
+        Returns
+        -------
+        deriv : ndarray
+            Array with one row per observation and the parameter numbers in
+            the last axis.
+        """
+        exog_provided = exog is not None
+        if exog is None:
+            exog = self.exog
+
+        offset, log_exposure = pred.resolve_linear_terms(
+            self, exog if exog_provided else None,
+            exposure, offset, nrows=pred.prediction_nrows(self, exog))
+
+        linpred = np.dot(exog, params) + offset + log_exposure
+
+        if which == "linear":
+            factor = np.ones_like(linpred)
+        elif which == "mean":
+            factor = self.family.link.inverse_deriv(linpred)
+        elif which == "var_unscaled":
+            mean = self.family.fitted(linpred)
+            mean_deriv = self.family.link.inverse_deriv(linpred)
+            var_deriv = self.family.variance.deriv(mean)
+            factor = var_deriv * mean_deriv
+        else:
+            raise ValueError(f'The which value "{which}" is not recognized')
+
+        return pred.RowFactoredJacobian(factor, exog)
 
     def get_distribution(self, params, scale=None, exog=None, exposure=None,
                          offset=None, var_weights=1., n_trials=1.):
